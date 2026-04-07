@@ -1,10 +1,6 @@
 <div align="center">
 
-<!-- ============================================================ -->
-<img width="600" height="200" alt="A real-time chat application built with Next js and Socket IO" src="https://github.com/user-attachments/assets/78150d77-242f-4163-8c72-4eefc8caa27d" />
 
-<!-- ============================================================ -->
-<!-- <img src="public/banner.png" alt="Chat App Banner" width="100%" /> -->
 
 <h1>💬 Chat</h1>
 
@@ -20,7 +16,13 @@
 </div>
 
 ---
+<div align="center">
+<!-- ============================================================ -->
+<img width="600" height="200" alt="A real-time chat application built with Next js and Socket IO" src="https://github.com/user-attachments/assets/78150d77-242f-4163-8c72-4eefc8caa27d" />
 
+<!-- ============================================================ -->
+<!-- <img src="public/banner.png" alt="Chat App Banner" width="100%" /> -->
+</div>
 ## Overview
 
 **Chat** is a full-stack, real-time messaging application built with Next.js and Socket.IO. It supports direct messages, group chats, server-based communities with channels, voice and video calls, and status updates — all wrapped in a sleek, dark-themed UI.
