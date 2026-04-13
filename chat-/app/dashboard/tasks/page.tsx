@@ -5,5 +5,9 @@ export const metadata = {
 };
 
 export default function DashboardTasks() {
-  return <TasksPage />;
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-400">Loading tasks...</div>}>
+      <TasksPage />
+    </Suspense>
+  );
 }
