@@ -1,5 +1,5 @@
 import TasksPage from "./TasksPage";
-
+import { Suspense } from "react";
 export const metadata = {
   title: "Tasks",
 };
