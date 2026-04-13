@@ -110,23 +110,26 @@ export default function TasksPage() {
   const assignableUsers = useMemo(() => {
     const allowedIds = new Set([...(serverInfo?.members || []), serverInfo?.owner ? String(serverInfo.owner) : ""]);
 
-    const current = currentUser?._id
+    const current: UserOption[] = currentUser?._id
       ? [{ _id: String(currentUser._id), name: `${currentUser.name || "Me"} (You)` }]
       : [];
 
-    const combined = [...current];
+    const combined: UserOption[] = [...current];
     users.forEach((user) => {
       if (serverInfo && !allowedIds.has(String(user._id))) {
         return;
       }
 
       if (!combined.some((item) => item._id === user._id)) {
-        combined.push(user);
+        combined.push({
+          ...user,
+          name: user.name || user.email || user._id,
+        });
       }
     });
 
     return combined;
-  }, [currentUser?._id, currentUser?.name, users]);
+  }, [currentUser?._id, currentUser?.name, users, serverInfo]);
 
   const fetchCurrentUser = useCallback(async () => {
     const res = await fetch("/api/getcurrentuser", { cache: "no-store" });
