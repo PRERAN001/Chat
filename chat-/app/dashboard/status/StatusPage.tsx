@@ -1,5 +1,7 @@
 "use client";
+import Image from "next/image";
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 
 
 
@@ -27,19 +29,6 @@ type StatusGroup = {
 };
 
 export default function StatusPage() {
-
-
-  
-  const Settings = () => {
-    useEffect(() => {
-      document.title = "Status | Chat";
-    }, []);
-  
-
-
-  
-};
-
     const [statuses, setStatuses] = useState<StatusGroup[]>([]);
     const [currentUserId, setCurrentUserId] = useState("");
     const [selectedGroup, setSelectedGroup] = useState<StatusGroup | null>(null);
@@ -168,16 +157,16 @@ export default function StatusPage() {
 
   return (
     <div className="h-screen w-full overflow-hidden bg-black font-sans flex items-center justify-center  text-zinc-100">
-      <div className="h-full w-full max-w-[1600px] bg-zinc-950 shadow-2xl overflow-hidden flex  border-zinc-800/60 relative">
+      <div className="h-full w-full max-w-400 bg-zinc-950 shadow-2xl overflow-hidden flex border-zinc-800/60 relative">
         
         {/* Subtle grid background for the whole app */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f10_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f10_1px,transparent_1px)] bg-[size:14px_24px] pointer-events-none z-0"></div>
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f10_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f10_1px,transparent_1px)] bg-size-[14px_24px] pointer-events-none z-0"></div>
 
         {/* --- Left Sidebar --- */}
-        <div className="w-[32%] min-w-[340px] max-w-[430px] border-r border-zinc-800 flex flex-col bg-zinc-950/80 backdrop-blur-md z-10">
+        <div className="w-[32%] min-w-85 max-w-107.5 border-r border-zinc-800 flex flex-col bg-zinc-950/80 backdrop-blur-md z-10">
           
           {/* Header */}
-          <div className="h-[108px] bg-zinc-900/80 flex items-end px-6 pb-4 text-zinc-100 shrink-0 border-b border-zinc-800">
+          <div className="h-27 bg-zinc-900/80 flex items-end px-6 pb-4 text-zinc-100 shrink-0 border-b border-zinc-800">
             <a 
               href="/dashboard" 
               className="mr-6 flex items-center hover:bg-zinc-800 p-2 -ml-2 rounded-full transition-colors text-zinc-400 hover:text-zinc-100"
@@ -197,13 +186,13 @@ export default function StatusPage() {
               className="flex items-center px-5 py-4 cursor-pointer hover:bg-zinc-900/60 transition-colors mt-2"
               onClick={() => fileInputRef.current?.click()}
             >
-              <div className="w-[52px] h-[52px] rounded-full bg-zinc-800 relative flex-shrink-0 flex items-center justify-center overflow-hidden border border-zinc-700 shadow-inner">
+              <div className="w-13 h-13 rounded-full bg-zinc-800 relative shrink-0 flex items-center justify-center overflow-hidden border border-zinc-700 shadow-inner">
                 {/* Default Avatar SVG */}
                 <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" className="text-zinc-400 mt-2">
                   <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"></path>
                 </svg>
                 {/* Plus Badge */}
-                <div className="absolute bottom-0 right-0 bg-zinc-100 text-black rounded-full w-[18px] h-[18px] flex items-center justify-center text-[15px] font-bold border-2 border-zinc-900 leading-none pb-[1px]">
+                <div className="absolute bottom-0 right-0 bg-zinc-100 text-black rounded-full w-4.5 h-4.5 flex items-center justify-center text-[15px] font-bold border-2 border-zinc-900 leading-none pb-px">
                   +
                 </div>
               </div>
@@ -241,15 +230,20 @@ export default function StatusPage() {
                   onClick={() => handleSelectGroup(group)}
                 >
                   {/* Status Ring (Emerald instead of green) */}
-                  <div className="w-[52px] h-[52px] rounded-full p-[2px] border-2 border-emerald-400 flex-shrink-0">
+                  <Link
+                    href={`/dashboard/achievements/${group.user._id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    title={`Open ${group.user.name || "user"} achievements`}
+                    className="w-13 h-13 rounded-full p-0.5 border-2 border-emerald-400 shrink-0"
+                  >
                     <div className="w-full h-full rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-300 overflow-hidden text-sm font-semibold shadow-inner">
                       {group.user.profilepic ? (
-                        <img src={group.user.profilepic} alt={group.user.name} className="w-full h-full object-cover" />
+                        <Image src={group.user.profilepic} alt={group.user.name || "user"} width={52} height={52} className="w-full h-full object-cover" />
                       ) : (
                         initials
                       )}
                     </div>
-                  </div>
+                  </Link>
                   <div className="ml-4 flex-1 border-b border-zinc-800/50 pb-3 pt-1">
                     <h2 className="text-zinc-100 font-medium text-[16px] leading-5 truncate">
                       {group.user.name || "Unknown"}
@@ -287,7 +281,7 @@ export default function StatusPage() {
               />
 
               {/* Status Header (Cinematic gradient) */}
-              <div className="absolute top-0 left-0 right-0 z-20 bg-gradient-to-b from-black/90 via-black/50 to-transparent pt-6 pb-12 px-6">
+              <div className="absolute top-0 left-0 right-0 z-20 bg-linear-to-b from-black/90 via-black/50 to-transparent pt-6 pb-12 px-6">
                 
                 {/* Progress Bar */}
                 <div className="flex gap-1.5 mb-5 max-w-3xl mx-auto">
@@ -307,13 +301,17 @@ export default function StatusPage() {
 
                 <div className="flex items-center justify-between max-w-3xl mx-auto">
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-full bg-zinc-800 border border-zinc-700 overflow-hidden flex items-center justify-center text-zinc-300 text-sm font-semibold shadow-lg">
+                    <Link
+                      href={`/dashboard/achievements/${selectedGroup.user._id}`}
+                      title={`Open ${selectedGroup.user.name || "user"} achievements`}
+                      className="w-11 h-11 rounded-full bg-zinc-800 border border-zinc-700 overflow-hidden flex items-center justify-center text-zinc-300 text-sm font-semibold shadow-lg hover:border-zinc-500 transition-colors"
+                    >
                       {selectedGroup.user.profilepic ? (
-                        <img src={selectedGroup.user.profilepic} alt={selectedGroup.user.name} className="w-full h-full object-cover" />
+                        <Image src={selectedGroup.user.profilepic} alt={selectedGroup.user.name || "user"} width={44} height={44} className="w-full h-full object-cover" />
                       ) : (
                         selectedGroup.user.name?.slice(0, 2).toUpperCase() || "U"
                       )}
-                    </div>
+                    </Link>
                     <div className="flex-1 min-w-0">
                       <h3 className="text-zinc-100 font-semibold tracking-wide truncate text-[16px] drop-shadow-md">
                         {selectedGroup.user.name || "Unknown"}
@@ -340,9 +338,11 @@ export default function StatusPage() {
               <div className="relative w-full h-full flex items-center justify-center z-10 p-4 pb-20 pt-24">
                 {currentStatus?.content?.type === "image" ||
                 currentStatus?.content?.mediaUrl?.includes("image") ? (
-                  <img
+                  <Image
                     src={currentStatus.content?.mediaUrl || ""}
                     alt="Status"
+                    width={1200}
+                    height={1200}
                     className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
                   />
                 ) : currentStatus?.content?.type === "video" ||
@@ -386,7 +386,7 @@ export default function StatusPage() {
             </div>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 text-sm">
-              <div className="flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-br from-zinc-900 to-black shadow-2xl border border-zinc-800/80 mb-6">
+              <div className="flex h-24 w-24 items-center justify-center rounded-full bg-linear-to-br from-zinc-900 to-black shadow-2xl border border-zinc-800/80 mb-6">
                 <svg viewBox="0 0 100 100" width="48" height="48" className="text-zinc-600" fill="currentColor">
                   <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" strokeWidth="5" strokeDasharray="50 15 30 15 40 15" strokeLinecap="round" />
                 </svg>

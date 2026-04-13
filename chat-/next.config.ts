@@ -9,11 +9,11 @@ const nextConfig: NextConfig = {
       },
       {
         protocol: "https",
-        hostname: "*.googleusercontent.com",
+        hostname: "avatars.githubusercontent.com",
       },
       {
         protocol: "https",
-        hostname: "avatars.githubusercontent.com",
+        hostname: "res.cloudinary.com",
       }
     ],
   },

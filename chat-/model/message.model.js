@@ -33,7 +33,31 @@ const MessageSchema = new Schema(
 
       url: {
         type: String
+      },
+
+      fileName: {
+        type: String
+      },
+
+      mimeType: {
+        type: String
       }
+    },
+
+    replyTo: {
+      type: Schema.Types.ObjectId,
+      ref: "Message",
+      default: null
+    },
+
+    isDeleted: {
+      type: Boolean,
+      default: false
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null
     },
 
     seenBy: [

@@ -3,7 +3,9 @@
 import { NextResponse } from "next/server";
 import connectDB  from "@/lib/db";
 import Status from "@/model/status.model";
-import "@/model/user.model";
+import User from "@/model/user.model";
+import Friend from "@/model/friend.model";
+import { getToken } from "next-auth/jwt";
 
 export async function POST(req) {
   try {
@@ -55,12 +57,39 @@ export async function POST(req) {
 }
 
 
-export async function GET() {
+export async function GET(req) {
   try {
     await connectDB();
 
-    
-    const statuses = await Status.find()
+    const token = await getToken({ req });
+    if (!token?.email) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    let currentUserId = null;
+
+    if (token?.email) {
+      const currentUser = await User.findOne({ email: token.email }).select("_id");
+      currentUserId = currentUser?._id || null;
+    }
+
+    let accessibleUserIds = [];
+    if (currentUserId) {
+      const acceptedFriends = await Friend.find({
+        status: "accepted",
+        $or: [{ requester: currentUserId }, { recipient: currentUserId }],
+      }).select("requester recipient");
+
+      const friendIds = acceptedFriends.map((item) =>
+        String(item.requester) === String(currentUserId) ? item.recipient : item.requester
+      );
+
+      accessibleUserIds = [String(currentUserId), ...friendIds.map(String)];
+    }
+
+    const statuses = await Status.find(
+      accessibleUserIds.length > 0 ? { userId: { $in: accessibleUserIds } } : {}
+    )
       .populate("userId", "name profilepic email")
       .sort({ createdAt: -1 });
 

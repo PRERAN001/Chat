@@ -10,13 +10,20 @@ export async function GET(req) {
   try {
     await connectDB();
 
+    const messageQueryOptions = {
+      path: "replyTo",
+      select: "_id senderId content isDeleted createdAt",
+    };
+
     const { searchParams } = new URL(req.url);
 
     const channelId = searchParams.get("channelId");
     if (channelId) {
       const messages = await Message.find({
         channelId,
-      }).sort({ createdAt: 1 });
+      })
+        .populate(messageQueryOptions)
+        .sort({ createdAt: 1 });
 
       return NextResponse.json(messages);
     }
@@ -25,7 +32,9 @@ export async function GET(req) {
     if (chatId) {
       const messages = await Message.find({
         chatId,
-      }).sort({ createdAt: 1 });
+      })
+        .populate(messageQueryOptions)
+        .sort({ createdAt: 1 });
 
       return NextResponse.json(messages);
     }
@@ -50,7 +59,9 @@ export async function GET(req) {
 
     const messages = await Message.find({
       chatId: chat._id
-    }).sort({ createdAt: 1 });
+    })
+      .populate(messageQueryOptions)
+      .sort({ createdAt: 1 });
 
     return NextResponse.json(messages);
 

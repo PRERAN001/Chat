@@ -8,6 +8,16 @@ export async function GET(req) {
 
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search");
+    const serverId = searchParams.get("serverId");
+
+    if (serverId) {
+      const server = await Server.findById(serverId);
+      if (!server) {
+        return NextResponse.json({ error: "Server not found" }, { status: 404 });
+      }
+
+      return NextResponse.json(server);
+    }
 
     let query = {};
     if (search) {

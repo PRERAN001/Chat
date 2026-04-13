@@ -8,7 +8,7 @@ export async function POST(req) {
   try {
     await connectDB();
 
-    const { senderEmail, receiverEmail, chatId, channelId, text } = await req.json();
+    const { senderEmail, receiverEmail, chatId, channelId, text, replyTo, fileUrl, fileName, mimeType } = await req.json();
 
     const sender = await User.findOne({ email: senderEmail });
     if (!sender) {
@@ -45,24 +45,43 @@ export async function POST(req) {
       }
     }
 
+    let replyToMessageId = null;
+    if (replyTo) {
+      const parentMessage = await Message.findById(replyTo);
+      if (!parentMessage) {
+        return NextResponse.json({ error: "Reply target message not found" }, { status: 404 });
+      }
+
+      replyToMessageId = parentMessage._id;
+    }
+
     const message = await Message.create({
       chatId: chat?._id ?? null,
       channelId: channelId ?? null,
       senderId,
+      replyTo: replyToMessageId,
       content: {
-        type: "text",
-        text
+        type: fileUrl ? "file" : "text",
+        text: text || fileName || "",
+        url: fileUrl || "",
+        fileName: fileName || "",
+        mimeType: mimeType || "",
       }
     });
 
+    const populatedMessage = await Message.findById(message._id).populate({
+      path: "replyTo",
+      select: "_id senderId content isDeleted createdAt",
+    });
+
     if (chat) {
-      chat.lastMessage = text;
+      chat.lastMessage = fileUrl ? `📎 ${fileName || "File"}` : text;
       await chat.save();
     }
 
     return NextResponse.json({
       success: true,
-      message,
+      message: populatedMessage,
       chatId: chat?._id ?? null,
       channelId: channelId ?? null
     });

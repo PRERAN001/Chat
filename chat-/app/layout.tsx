@@ -13,12 +13,17 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata = {
+export const metadata: Metadata = {
   title: {
     default: "Chat",
     template: "%s | Chat"
   },
+
   description: "A real-time chat application built with Next.js and Socket.IO",
+  icons: {
+    icon:'/logo.svg'
+    
+  },
 };
 
 export default function RootLayout({

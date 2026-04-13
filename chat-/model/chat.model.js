@@ -15,6 +15,18 @@ const ChatSchema = new Schema(
       default: false
     },
 
+    groupname:{
+        type: String,
+        default: "",
+        required:false
+    },
+
+    grpavtar:{
+        type: String,
+        default: "",
+        required:false
+    },
+
     lastMessage: {
       type: String,
       default: ""

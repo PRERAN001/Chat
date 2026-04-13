@@ -3,10 +3,10 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { io, Socket } from "socket.io-client";
-import { useSession } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
 import EmojiPicker from "emoji-picker-react";
 import Peer from "simple-peer";
-import mongoose from "mongoose";
+import FileMessageUploader from "@/components/FileMessageUploader";
 type CurrentUser = {
   _id?: string;
   picture?: string;
@@ -21,21 +21,68 @@ type User = {
   profilepic?: string;
 };
 
+type FriendRequestItem = {
+  _id: string;
+  requester?: User;
+  recipient?: User;
+  status: "pending" | "accepted" | "rejected";
+  createdAt?: string;
+};
+
+type DiscoverUser = User & {
+  relationStatus: "none" | "friends" | "request_sent" | "request_received";
+};
+
 type Message = {
+  _id: string;
   message: string;
   from: string;
   senderId?: string;
   chatId?: string | null;
   channelId?: string | null;
+  createdAt?: string;
+  isDeleted?: boolean;
+  contentType?: "text" | "file" | "image" | "video";
+  fileUrl?: string;
+  fileName?: string;
+  mimeType?: string;
+  replyTo?: {
+    _id?: string;
+    text?: string;
+    senderId?: string;
+    isDeleted?: boolean;
+  } | null;
 };
 
 type DbMessage = {
+  _id?: string;
   senderId: string;
   chatId?: string;
   channelId?: string;
-  content?: {
-    text?: string;
+  createdAt?: string;
+  isDeleted?: boolean;
+  replyTo?: {
+    _id?: string;
+    senderId?: string;
+    isDeleted?: boolean;
+    content?: {
+      text?: string;
+    };
   };
+  content?: {
+    type?: "text" | "file" | "image" | "video";
+    text?: string;
+    url?: string;
+    fileName?: string;
+    mimeType?: string;
+  };
+};
+
+type ReplyPreview = {
+  _id: string;
+  senderId?: string;
+  text?: string;
+  isDeleted?: boolean;
 };
 
 type GroupParticipant = {
@@ -137,9 +184,9 @@ const Avatar = ({
 
 
 const Page = () => {
+  const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
   const inputmsgref = useRef<HTMLInputElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -150,10 +197,18 @@ const Page = () => {
   const [showEmoji, setShowEmoji] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [users, setUsers] = useState<User[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequestItem[]>([]);
+  const [sentFriendRequests, setSentFriendRequests] = useState<FriendRequestItem[]>([]);
+  const [discoverQuery, setDiscoverQuery] = useState("");
+  const [discoverUsers, setDiscoverUsers] = useState<DiscoverUser[]>([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
+  const [isSendingRequestTo, setIsSendingRequestTo] = useState<string | null>(null);
+  const [isAcceptingRequestId, setIsAcceptingRequestId] = useState<string | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [currentuser, setcurrentuser] = useState<CurrentUser | null>({});
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<ReplyPreview | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
 
   const currentUserImage = currentuser?.picture ?? currentuser?.profilepic;
   const { data: session } = useSession();
@@ -192,34 +247,76 @@ const Page = () => {
   const [serverSearchTerm, setServerSearchTerm] = useState("");
   const [showBrowseServers, setShowBrowseServers] = useState(false);
   const [isSearchingServers, setIsSearchingServers] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
+
+  const formatMessageTime = (createdAt?: string) => {
+    if (!createdAt) return "";
+    return new Date(createdAt).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const mapDbMessageToUi = (msg: DbMessage): Message => ({
+    _id: String(msg._id || crypto.randomUUID()),
+    message: msg.content?.text || "",
+    from: String(msg.senderId),
+    senderId: String(msg.senderId),
+    chatId: msg.chatId ? String(msg.chatId) : null,
+    channelId: msg.channelId ? String(msg.channelId) : null,
+    createdAt: msg.createdAt,
+    isDeleted: Boolean(msg.isDeleted),
+    contentType: msg.content?.type || "text",
+    fileUrl: msg.content?.url || "",
+    fileName: msg.content?.fileName || "",
+    mimeType: msg.content?.mimeType || "",
+    replyTo: msg.replyTo
+      ? {
+          _id: String(msg.replyTo._id || ""),
+          senderId: msg.replyTo.senderId ? String(msg.replyTo.senderId) : undefined,
+          isDeleted: Boolean(msg.replyTo.isDeleted),
+          text: msg.replyTo.content?.text || "",
+        }
+      : null,
+  });
+
+  const attachStreamToVideo = async (
+    element: HTMLVideoElement | null,
+    stream: MediaStream,
+    muted = false
+  ) => {
+    if (!element) return;
+    element.srcObject = stream;
+    element.muted = muted;
+
+    try {
+      await element.play();
+    } catch (err) {
+      console.warn("[CALL] Video play() blocked or delayed:", err);
+    }
+  };
 
 
   
   const cleanupCall = () => {
-    console.log("[CLEANUP] Starting call cleanup");
-    
     if (peerRef.current) {
-      console.log("[CLEANUP] Destroying peer connection");
       peerRef.current.destroy();
       peerRef.current = null;
     }
 
     if (localStreamRef.current) {
-      console.log("[CLEANUP] Stopping local media tracks");
       localStreamRef.current.getTracks().forEach((track) => {
-        console.log("[CLEANUP] Stopping track:", track.kind);
         track.stop();
       });
       localStreamRef.current = null;
     }
 
     if (localVideoRef.current) {
-      console.log("[CLEANUP] Clearing local video element");
       localVideoRef.current.srcObject = null;
     }
 
     if (remoteVideoRef.current) {
-      console.log("[CLEANUP] Clearing remote video element");
       remoteVideoRef.current.srcObject = null;
     }
 
@@ -227,13 +324,13 @@ const Page = () => {
     setCallAccepted(false);
     setIncomingCall(null);
     setCallPeerEmail(null);
-    console.log("[CLEANUP] Call cleanup completed");
   };
 
   const make_call = async (targetUser: User, withVideo: boolean) => {
     try {
       if (!socketRef.current || !socketRef.current.connected) {
         console.error("[CALL] Socket is not connected; cannot initiate call");
+        socketRef.current?.connect();
         alert("Socket is not connected yet. Please wait a moment and try again.");
         return;
       }
@@ -248,26 +345,24 @@ const Page = () => {
         return;
       }
 
-      console.log("[CALL] Initiating call to:", targetUser.email, "with video:", withVideo);
-      console.log("[CALL] Current user session:", session?.user?.email);
-      
       const stream = await navigator.mediaDevices.getUserMedia({
         video: withVideo,
         audio: true,
       });
-      console.log("[CALL] Got media stream - video:", withVideo, "audio: true");
+
+      if (withVideo && stream.getVideoTracks().length === 0) {
+        console.error("[CALL] Video call requested but no video track was captured");
+        alert("Camera stream not available. Please check camera permission and try again.");
+        return;
+      }
 
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        console.log("[CALL] Attached stream to local video element");
-      }
+      void attachStreamToVideo(localVideoRef.current, stream, true);
 
       setIsVideoCall(withVideo);
       setIsCalling(true);
       setCallAccepted(false);
       setCallPeerEmail(targetUser.email);
-      console.log("[CALL] Updated call states - isCalling: true, videoCall:", withVideo);
 
       const peer = new Peer({
         initiator: true,
@@ -275,12 +370,8 @@ const Page = () => {
         stream,
       });
       peerRef.current = peer;
-      console.log("[CALL] Created peer object with initiator: true");
 
       peer.on("signal", (data: unknown) => {
-        console.log("[CALL:SIGNAL] Peer generated signal, emitting call-user to backend");
-        console.log("[CALL:SIGNAL] Target user:", targetUser.email);
-        console.log("[CALL:SIGNAL] From:", session?.user?.email);
         socketRef.current?.emit("call-user", {
           signalData: data,
           to: targetUser.email,
@@ -291,15 +382,10 @@ const Page = () => {
       });
 
       peer.on("stream", (remoteStream: MediaStream) => {
-        console.log("[CALL:STREAM] Received remote stream with", remoteStream.getTracks().length, "tracks");
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          console.log("[CALL:STREAM] Attached remote stream to video element");
-        }
+        void attachStreamToVideo(remoteVideoRef.current, remoteStream, false);
       });
 
       peer.on("close", () => {
-        console.log("[CALL:CLOSE] Peer connection closed");
         cleanupCall();
       });
 
@@ -307,8 +393,6 @@ const Page = () => {
         console.error("[CALL:ERROR] Peer error:", err);
         cleanupCall();
       });
-
-      console.log("[CALL] Caller setup complete, waiting for peer signal");
     } catch (error) {
       console.error("[CALL:ERROR] Failed to start call:", error);
       cleanupCall();
@@ -317,30 +401,27 @@ const Page = () => {
 
   const answerCall = async () => {
     if (!incomingCall) {
-      console.log("[ANSWER] No incoming call to answer");
       return;
     }
 
     try {
-      console.log("[ANSWER] Answering incoming call from:", incomingCall.from);
-      console.log("[ANSWER] Call type - Video:", incomingCall.isVideo, "Audio: true");
-      
       const stream = await navigator.mediaDevices.getUserMedia({
         video: incomingCall.isVideo,
         audio: true,
       });
-      console.log("[ANSWER] Got media stream successfully");
+
+      if (incomingCall.isVideo && stream.getVideoTracks().length === 0) {
+        console.error("[ANSWER] Video call requested but no video track was captured");
+        alert("Camera stream not available. Please check camera permission and try again.");
+        return;
+      }
 
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        console.log("[ANSWER] Attached stream to local video element");
-      }
+      void attachStreamToVideo(localVideoRef.current, stream, true);
 
       setIsVideoCall(incomingCall.isVideo);
       setCallAccepted(true);
       setCallPeerEmail(incomingCall.from);
-      console.log("[ANSWER] Updated call states - callAccepted: true");
 
       const peer = new Peer({
         initiator: false,
@@ -348,11 +429,8 @@ const Page = () => {
         stream,
       });
       peerRef.current = peer;
-      console.log("[ANSWER] Created peer object with initiator: false (responder mode)");
 
       peer.on("signal", (data: unknown) => {
-        console.log("[ANSWER:SIGNAL] Peer generated signal, emitting answer-call to backend");
-        console.log("[ANSWER:SIGNAL] Sending signal back to caller:", incomingCall.from);
         socketRef.current?.emit("answer-call", {
           to: incomingCall.from,
           signal: data,
@@ -360,15 +438,10 @@ const Page = () => {
       });
 
       peer.on("stream", (remoteStream: MediaStream) => {
-        console.log("[ANSWER:STREAM] Received remote stream from caller with", remoteStream.getTracks().length, "tracks");
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          console.log("[ANSWER:STREAM] Attached remote stream to video element");
-        }
+        void attachStreamToVideo(remoteVideoRef.current, remoteStream, false);
       });
 
       peer.on("close", () => {
-        console.log("[ANSWER:CLOSE] Peer connection closed");
         cleanupCall();
       });
 
@@ -377,10 +450,8 @@ const Page = () => {
         cleanupCall();
       });
 
-      console.log("[ANSWER] Signaling peer with incoming SDP offer");
       peer.signal(incomingCall.signal);
       setIncomingCall(null);
-      console.log("[ANSWER] Answer setup complete, awaiting peer connection");
     } catch (error) {
       console.error("[ANSWER:ERROR] Failed to answer call:", error);
       cleanupCall();
@@ -389,17 +460,9 @@ const Page = () => {
 
   const endCall = () => {
     const target = callPeerEmail || incomingCall?.from;
-    console.log("[END-CALL] Ending call");
-    console.log("[END-CALL] Target user:", target);
-    console.log("[END-CALL] Call peer email:", callPeerEmail);
-    console.log("[END-CALL] Incoming call from:", incomingCall?.from);
     
     if (target) {
-      console.log("[END-CALL] Emitting end-call event to backend for target:", target);
       socketRef.current?.emit("end-call", { to: target });
-      console.log("[END-CALL] End-call event emitted");
-    } else {
-      console.log("[END-CALL] No target found, skipping backend notification");
     }
     
     cleanupCall();
@@ -451,7 +514,6 @@ const Page = () => {
       setGroupName("My Group Chat");
       await fetchGroups();
       alert("Group created successfully ✅");
-      console.log("Created group chat:", data);
     } catch (err) {
     console.error("Group chat creation error:", err);
     } finally {
@@ -465,26 +527,45 @@ const Page = () => {
   }
 
   useEffect(() => {
-    socketRef.current = io("http://localhost:3001");
-
-    socketRef.current.on("connect", () => {
-      console.log("[SOCKET] Connected to signaling server:", socketRef.current?.id);
+    const socket = io(SOCKET_URL, {
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      transports: ["websocket", "polling"],
     });
 
-    socketRef.current.on("disconnect", (reason: string) => {
-      console.log("[SOCKET] Disconnected from signaling server. Reason:", reason);
-    });
+    socketRef.current = socket;
+
+    const handleConnect = () => {
+      setIsSocketConnected(true);
+    };
+
+    const handleDisconnect = () => {
+      setIsSocketConnected(false);
+    };
+
+    const handleConnectError = (err: unknown) => {
+      setIsSocketConnected(false);
+      console.error("[SOCKET] connect_error:", err);
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("connect_error", handleConnectError);
 
     return () => {
-      socketRef.current?.disconnect();
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("connect_error", handleConnectError);
+      socket.disconnect();
+      setIsSocketConnected(false);
     };
-  }, []);
+  }, [SOCKET_URL]);
 
   useEffect(() => {
-    if (!socketRef.current || !session?.user?.email) return;
-    console.log("[SOCKET] Emitting join for user:", session.user.email);
+    if (!socketRef.current || !session?.user?.email || !isSocketConnected) return;
     socketRef.current.emit("join", session.user.email);
-  }, [session]);
+  }, [session?.user?.email, isSocketConnected]);
 
   useEffect(() => {
     usersRef.current = users;
@@ -494,54 +575,39 @@ const Page = () => {
     if (!socketRef.current) return;
 
     const handleIncomingCall = (payload: IncomingCall) => {
-      console.log("[SOCKET:INCOMING-CALL] Received incoming call event");
-      console.log("[SOCKET:INCOMING-CALL] From:", payload.from);
-      console.log("[SOCKET:INCOMING-CALL] Caller name:", payload.name);
-      console.log("[SOCKET:INCOMING-CALL] Video call:", payload.isVideo);
-      
       const caller = usersRef.current.find((u) => u.email === payload.from);
       if (caller) {
-        console.log("[SOCKET:INCOMING-CALL] Found caller in users list:", caller.name);
         setSelectedGroup(null);
         setSelectedUser(caller);
-      } else {
-        console.log("[SOCKET:INCOMING-CALL] Caller not found in users list");
       }
       
       setIncomingCall(payload);
       setIsVideoCall(Boolean(payload.isVideo));
       setIsCalling(false);
-      console.log("[SOCKET:INCOMING-CALL] Incoming call state updated, ready to answer");
     };
 
     const handleCallAccepted = ({ signal }: { signal: unknown }) => {
-      console.log("[SOCKET:CALL-ACCEPTED] Call was accepted by remote user");
       if (!peerRef.current) {
         console.error("[SOCKET:CALL-ACCEPTED] ERROR: peerRef is null, cannot process acceptance signal");
         return;
       }
-      console.log("[SOCKET:CALL-ACCEPTED] Signaling peer with acceptance SDP answer");
       setCallAccepted(true);
       setIsCalling(false);
       peerRef.current.signal(signal);
-      console.log("[SOCKET:CALL-ACCEPTED] Peer signaling complete");
     };
 
     const handleCallEnded = () => {
-      console.log("[SOCKET:CALL-ENDED] Remote user ended the call");
       cleanupCall();
     };
 
     socketRef.current.on("incoming-call", handleIncomingCall);
     socketRef.current.on("call-accepted", handleCallAccepted);
     socketRef.current.on("call-ended", handleCallEnded);
-    console.log("[SOCKET] Registered call event listeners: incoming-call, call-accepted, call-ended");
 
     return () => {
       socketRef.current?.off("incoming-call", handleIncomingCall);
       socketRef.current?.off("call-accepted", handleCallAccepted);
       socketRef.current?.off("call-ended", handleCallEnded);
-      console.log("[SOCKET] Unregistered call event listeners");
     };
   }, []);
 
@@ -555,6 +621,8 @@ const Page = () => {
     if (!socketRef.current) return;
 
     const handleReceive = (data: Message) => {
+      if (!data?._id) return;
+
       const incomingChannelId = data.channelId ? String(data.channelId) : null;
       const incomingChatId = data.chatId ? String(data.chatId) : null;
       const activeChatId = selectedGroup?._id || activeDmChatId || null;
@@ -572,9 +640,11 @@ const Page = () => {
       if (
         !selectedGroup &&
         !selectedChannel &&
-        selectedUser?.email &&
-        data.from &&
-        data.from !== selectedUser.email
+        selectedUser &&
+        !(
+          (data.senderId && String(data.senderId) === String(selectedUser._id)) ||
+          (data.from && data.from.toLowerCase() === selectedUser.email.toLowerCase())
+        )
       ) {
         return;
       }
@@ -582,50 +652,158 @@ const Page = () => {
       const sender = users.find((u) => u.email === data.from);
       const senderId = data.senderId || (sender ? String(sender._id) : data.from);
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          message: data.message,
-          from: senderId,
-          senderId,
-          chatId: incomingChatId,
-          channelId: incomingChannelId,
-        },
-      ]);
+      setMessages((prev) => {
+        if (prev.some((item) => item._id === String(data._id))) {
+          return prev;
+        }
+
+        return [
+          ...prev,
+          {
+            _id: String(data._id),
+            message: data.message,
+            from: senderId,
+            senderId,
+            chatId: incomingChatId,
+            channelId: incomingChannelId,
+            createdAt: data.createdAt,
+            isDeleted: Boolean(data.isDeleted),
+            contentType: data.contentType || "text",
+            fileUrl: data.fileUrl || "",
+            fileName: data.fileName || "",
+            mimeType: data.mimeType || "",
+            replyTo: data.replyTo
+              ? {
+                  _id: data.replyTo._id,
+                  text: data.replyTo.text,
+                  senderId: data.replyTo.senderId,
+                  isDeleted: data.replyTo.isDeleted,
+                }
+              : null,
+          },
+        ];
+      });
     };
 
-    const handleTyping = ({ from }: { from: string }) => {
-      if (!selectedUser || from !== selectedUser.email || selectedChannel) return;
-      setIsOtherUserTyping(true);
-    };
+    const handleReceiveDeletedMessage = ({ messageId }: { messageId: string }) => {
+      if (!messageId) return;
 
-    const handleStopTyping = ({ from }: { from: string }) => {
-      if (!selectedUser || from !== selectedUser.email || selectedChannel) return;
-      setIsOtherUserTyping(false);
+      setMessages((prev) =>
+        prev.map((item) =>
+          item._id === String(messageId)
+            ? { ...item, isDeleted: true, message: "This message was deleted" }
+            : item
+        )
+      );
     };
 
     socketRef.current.on("receive_message", handleReceive);
-    socketRef.current.on("typing", handleTyping);
-    socketRef.current.on("stop_typing", handleStopTyping);
+    socketRef.current.on("receive_message_deleted", handleReceiveDeletedMessage);
 
     return () => {
       socketRef.current?.off("receive_message", handleReceive);
-      socketRef.current?.off("typing", handleTyping);
-      socketRef.current?.off("stop_typing", handleStopTyping);
+      socketRef.current?.off("receive_message_deleted", handleReceiveDeletedMessage);
     };
   }, [selectedUser, selectedGroup, selectedChannel, activeDmChatId, users]);
 
   useEffect(() => {
     setMessages([]);
-    setIsOtherUserTyping(false);
+    setReplyingTo(null);
     setIsPrPickerOpen(false);
     setPrsError("");
   }, [selectedUser, selectedGroup, selectedChannel]);
 
   const fetchUsers = async () => {
-    const res = await fetch("/api/users");
-    const data = await res.json();
-    setUsers(data);
+    try {
+      const res = await fetch("/api/friends", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setUsers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Failed to load friends:", error);
+    }
+  };
+
+  const fetchFriendRequests = async () => {
+    try {
+      const res = await fetch("/api/friends/requests", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setFriendRequests(Array.isArray(data?.incoming) ? data.incoming : []);
+      setSentFriendRequests(Array.isArray(data?.sent) ? data.sent : []);
+    } catch (error) {
+      console.error("Failed to load friend requests:", error);
+    }
+  };
+
+  const fetchDiscoverUsers = async (query: string) => {
+    try {
+      setIsSearchingUsers(true);
+      const params = new URLSearchParams();
+      if (query.trim()) params.set("q", query.trim());
+      const url = `/api/users/search${params.toString() ? `?${params.toString()}` : ""}`;
+
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setDiscoverUsers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Failed to search users:", error);
+    } finally {
+      setIsSearchingUsers(false);
+    }
+  };
+
+  const sendFriendRequest = async (recipientId: string) => {
+    try {
+      setIsSendingRequestTo(recipientId);
+      const res = await fetch("/api/friends/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipientId }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to send friend request");
+      }
+
+      setNotification({ type: "success", message: "Friend request sent ✅" });
+      await Promise.all([fetchFriendRequests(), fetchDiscoverUsers(discoverQuery)]);
+      setTimeout(() => setNotification(null), 3000);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Failed to send friend request";
+      setNotification({ type: "error", message: errorMsg });
+      setTimeout(() => setNotification(null), 3500);
+    } finally {
+      setIsSendingRequestTo(null);
+    }
+  };
+
+  const acceptFriendRequest = async (requestId: string) => {
+    try {
+      setIsAcceptingRequestId(requestId);
+      const res = await fetch("/api/friends/accept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to accept friend request");
+      }
+
+      setNotification({ type: "success", message: "Friend request accepted 🎉" });
+      await Promise.all([fetchUsers(), fetchFriendRequests(), fetchDiscoverUsers(discoverQuery)]);
+      setTimeout(() => setNotification(null), 3000);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Failed to accept friend request";
+      setNotification({ type: "error", message: errorMsg });
+      setTimeout(() => setNotification(null), 3500);
+    } finally {
+      setIsAcceptingRequestId(null);
+    }
   };
 
   const fetchGroups = async () => {
@@ -712,7 +890,7 @@ const Page = () => {
     }
   };
 
-  const joinServer = async (serverId: mongoose.Types.ObjectId, userId: mongoose.Types.ObjectId) => {
+  const joinServer = async (serverId: string, userId: string) => {
     try {
       setJoiningServerId(String(serverId));
       
@@ -789,9 +967,19 @@ const Page = () => {
 
   useEffect(() => {
     fetchUsers();
+    fetchFriendRequests();
+    fetchDiscoverUsers("");
     fetchGroups();
     getcurrentuserinfo();
   }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchDiscoverUsers(discoverQuery);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [discoverQuery]);
 
   useEffect(() => {
     if (!currentuser?._id) return;
@@ -830,20 +1018,20 @@ const Page = () => {
         if (!endpoint) return;
 
         const res = await fetch(endpoint);
-        const data = await res.json();
+        const payload: unknown = await res.json();
 
-        const mapped = data.map((msg: DbMessage) => ({
-          message: msg.content?.text || "",
-          from: String(msg.senderId),
-          senderId: String(msg.senderId),
-          chatId: msg.chatId ? String(msg.chatId) : null,
-          channelId: msg.channelId ? String(msg.channelId) : null,
-        }));
+        const messagesData: DbMessage[] = Array.isArray(payload)
+          ? (payload as DbMessage[])
+          : Array.isArray((payload as { messages?: DbMessage[] })?.messages)
+          ? ((payload as { messages?: DbMessage[] }).messages as DbMessage[])
+          : [];
+
+        const mapped: Message[] = messagesData.map((msg: DbMessage) => mapDbMessageToUi(msg));
 
         setMessages(mapped);
 
         if (selectedUser && mapped.length > 0) {
-          const foundChatId = mapped.find((item: Message) => item.chatId)?.chatId;
+          const foundChatId = mapped.find((item) => item.chatId)?.chatId;
           setActiveDmChatId(foundChatId || null);
         }
       } catch (err) {
@@ -876,43 +1064,82 @@ const Page = () => {
     return () => clearTimeout(delaySearch);
   }, [serverSearchTerm, showBrowseServers]);
 
-  const sendmsg = async (msgg: string | undefined) => {
+  const sendMessage = async ({
+    text,
+    fileUrl,
+    fileName,
+    mimeType,
+  }: {
+    text?: string;
+    fileUrl?: string;
+    fileName?: string;
+    mimeType?: string;
+  }) => {
     const fromUser = session?.user?.email;
+    const trimmedText = text?.trim();
 
-    if (!msgg || !fromUser || !currentuser?._id) return;
+    if (!fromUser || !currentuser?._id) return;
     if (!selectedUser && !selectedGroup && !selectedChannel) return;
+    if (!trimmedText && !fileUrl) return;
 
     const optimisticChatId = selectedGroup?._id || activeDmChatId || null;
     const optimisticChannelId = selectedChannel?._id || null;
+    const tempId = `tmp-${crypto.randomUUID()}`;
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        message: msgg,
-        from: String(currentuser?._id),
-        senderId: String(currentuser?._id),
-        chatId: optimisticChatId,
-        channelId: optimisticChannelId,
-      },
-    ]);
+    const optimisticMessage: Message = {
+      _id: tempId,
+      message: trimmedText || fileName || "File",
+      from: String(currentuser?._id),
+      senderId: String(currentuser?._id),
+      chatId: optimisticChatId,
+      channelId: optimisticChannelId,
+      createdAt: new Date().toISOString(),
+      isDeleted: false,
+      contentType: fileUrl ? "file" : "text",
+      fileUrl: fileUrl || "",
+      fileName: fileName || "",
+      mimeType: mimeType || "",
+      replyTo: replyingTo
+        ? {
+            _id: replyingTo._id,
+            senderId: replyingTo.senderId,
+            text: replyingTo.text,
+            isDeleted: replyingTo.isDeleted,
+          }
+        : null,
+    };
+
+    setMessages((prev) => [...prev, optimisticMessage]);
 
     try {
       const payload = selectedChannel?._id
         ? {
             senderEmail: fromUser,
             channelId: selectedChannel._id,
-            text: msgg,
+            text: trimmedText,
+            fileUrl,
+            fileName,
+            mimeType,
+            replyTo: replyingTo?._id,
           }
         : selectedGroup?._id
         ? {
             senderEmail: fromUser,
             chatId: selectedGroup._id,
-            text: msgg,
+            text: trimmedText,
+            fileUrl,
+            fileName,
+            mimeType,
+            replyTo: replyingTo?._id,
           }
         : {
             senderEmail: fromUser,
             receiverEmail: selectedUser?.email,
-            text: msgg,
+            text: trimmedText,
+            fileUrl,
+            fileName,
+            mimeType,
+            replyTo: replyingTo?._id,
           };
 
       const response = await fetch("/api/send-messages", {
@@ -928,34 +1155,129 @@ const Page = () => {
         throw new Error(responseData?.error || "Failed to send message");
       }
 
+      const saved = responseData?.message as DbMessage | undefined;
+      if (!saved?._id) {
+        throw new Error("Message saved but no id returned");
+      }
+
+      const normalizedSaved = mapDbMessageToUi(saved);
+
+      setMessages((prev) => prev.map((item) => (item._id === tempId ? normalizedSaved : item)));
+
       const resolvedChatId =
         selectedGroup?._id || responseData?.chatId || optimisticChatId || null;
-      const resolvedChannelId = selectedChannel?._id || responseData?.channelId || null;
 
       if (selectedUser && responseData?.chatId) {
         setActiveDmChatId(String(responseData.chatId));
       }
 
-      if (selectedUser?.email) {
-        socketRef.current?.emit("stop_typing", {
-          to: selectedUser.email,
-          from: fromUser,
-        });
+      if (!selectedGroup && !selectedChannel && resolvedChatId && resolvedChatId !== optimisticChatId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m._id === normalizedSaved._id || (m.from === String(currentuser?._id) && m.chatId === optimisticChatId)
+              ? { ...m, chatId: resolvedChatId }
+              : m
+          )
+        );
       }
 
       socketRef.current?.emit("send_message", {
+        _id: normalizedSaved._id,
         to: selectedUser?.email,
-        message: msgg,
+        message: normalizedSaved.message,
         from: fromUser,
         senderId: String(currentuser?._id),
-        chatId: resolvedChatId,
-        channelId: resolvedChannelId,
+        chatId: normalizedSaved.chatId,
+        channelId: normalizedSaved.channelId,
+        createdAt: normalizedSaved.createdAt,
+        isDeleted: normalizedSaved.isDeleted,
+        contentType: normalizedSaved.contentType,
+        fileUrl: normalizedSaved.fileUrl,
+        fileName: normalizedSaved.fileName,
+        mimeType: normalizedSaved.mimeType,
+        replyTo: normalizedSaved.replyTo,
       });
+
+      setReplyingTo(null);
+      if (inputmsgref.current) inputmsgref.current.value = "";
     } catch (err) {
       console.error("Send error:", err);
+      setMessages((prev) => prev.filter((item) => item._id !== tempId));
+      alert(err instanceof Error ? err.message : "Failed to send message");
     }
+  };
 
-    if (inputmsgref.current) inputmsgref.current.value = "";
+  const sendmsg = async (msgg: string | undefined) => {
+    await sendMessage({ text: msgg });
+  };
+
+  const sendFileMessage = async (file: {
+    fileUrl: string;
+    fileName: string;
+    mimeType?: string;
+  }) => {
+    await sendMessage({
+      text: file.fileName,
+      fileUrl: file.fileUrl,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+    });
+  };
+
+  const startReplyToMessage = (msg: Message) => {
+    setReplyingTo({
+      _id: msg._id,
+      senderId: msg.senderId,
+      text: msg.message,
+      isDeleted: msg.isDeleted,
+    });
+    inputmsgref.current?.focus();
+  };
+
+  const handleDeleteMessage = async (msg: Message) => {
+    const senderEmail = session?.user?.email;
+    if (!senderEmail || !msg?._id || msg.isDeleted) return;
+
+    try {
+      setDeletingMessageId(msg._id);
+
+      const res = await fetch(`/api/messages/${msg._id}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ senderEmail }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to delete message");
+      }
+
+      setMessages((prev) =>
+        prev.map((item) =>
+          item._id === msg._id
+            ? { ...item, isDeleted: true, message: "This message was deleted" }
+            : item
+        )
+      );
+
+      if (replyingTo?._id === msg._id) {
+        setReplyingTo(null);
+      }
+
+      socketRef.current?.emit("delete_message", {
+        to: selectedUser?.email,
+        messageId: msg._id,
+        chatId: msg.chatId,
+        channelId: msg.channelId,
+      });
+    } catch (error) {
+      console.error("Delete message error:", error);
+      alert(error instanceof Error ? error.message : "Failed to delete message");
+    } finally {
+      setDeletingMessageId(null);
+    }
   };
 
   const loadPrsForSharing = async () => {
@@ -1032,41 +1354,19 @@ const Page = () => {
     });
   };
 
-  const handleTypingChange = (value: string) => {
-    const fromUser = session?.user?.email;
-    if (!selectedUser || !fromUser) return;
-
-    if (!value.trim()) {
-      socketRef.current?.emit("stop_typing", {
-        to: selectedUser.email,
-        from: fromUser,
-      });
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
-      return;
+  const handleSignOut = async () => {
+    try {
+      setIsSigningOut(true);
+      await signOut({ callbackUrl: "/signin" });
+    } catch (error) {
+      console.error("Sign out failed:", error);
+      setIsSigningOut(false);
     }
-
-    socketRef.current?.emit("typing", {
-      to: selectedUser.email,
-      from: fromUser,
-    });
-
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-
-    typingTimeoutRef.current = setTimeout(() => {
-      socketRef.current?.emit("stop_typing", {
-        to: selectedUser.email,
-        from: fromUser,
-      });
-    }, 900);
   };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, selectedUser, isOtherUserTyping]);
+  }, [messages, selectedUser]);
 
   const filteredUsers = users.filter((user) => {
     const q = searchText.trim().toLowerCase();
@@ -1079,10 +1379,10 @@ const Page = () => {
 
   return (
     <div className="h-screen w-full overflow-hidden bg-black font-sans flex items-center justify-center  text-zinc-100">
-      <div className="h-full w-full max-w-[1600px] bg-zinc-950 shadow-2xl overflow-hidden flex  border-zinc-800/60 relative">
+      <div className="h-full w-full max-w-400 bg-zinc-950 shadow-2xl overflow-hidden flex  border-zinc-800/60 relative">
         
         {/* Optional subtle grid background for the whole app (like the landing page) */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f10_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f10_1px,transparent_1px)] bg-[size:14px_24px] pointer-events-none z-0"></div>
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f10_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f10_1px,transparent_1px)] bg-size-[14px_24px] pointer-events-none z-0"></div>
 
         {/* Notification Toast */}
         {notification && (
@@ -1107,98 +1407,64 @@ const Page = () => {
         )}
 
         {/* --- Sidebar --- */}
-        <div className="w-[32%] min-w-[390px] max-w-[430px] border-r border-zinc-800 flex flex-col bg-zinc-950/80 backdrop-blur-md z-10">
-          <div className="h-16 bg-zinc-900/80 px-4 flex items-center justify-between border-b border-zinc-800">
-            
-            {/* Wrapped Profile Pic to prevent flex-squishing */}
-            <div className="shrink-0 w-[40px] h-[40px] rounded-full overflow-hidden flex items-center justify-center border border-zinc-700/50">
-              <Avatar
-                src={currentUserImage}
-                name={session?.user?.name || "You"}
-                size={40}
-                className="w-full h-full object-cover shrink-0"
-              />
-            </div>
-
-            <div
-              className="flex items-center gap-1 text-zinc-400 overflow-x-auto whitespace-nowrap scrollbar-thin"
-              suppressHydrationWarning
+        <div className="w-[36%] min-w-115 max-w-155 border-r border-zinc-800 flex bg-zinc-950/80 backdrop-blur-md z-10">
+          <div className="w-20 shrink-0 border-r border-zinc-800 bg-zinc-950/95 px-2 py-3 flex flex-col items-center gap-5">
+            <Link
+              href="/dashboard"
+              className="grid h-12 w-12 place-items-center rounded-[20px] bg-[linear-gradient(180deg,rgba(88,101,242,0.95),rgba(59,130,246,0.75))] shadow-lg transition hover:scale-105"
+              title="Home"
             >
-              <Link
-                href="/dashboard"
-                className="hover:bg-zinc-800 hover:text-zinc-100 px-3 py-1.5 rounded-full text-sm transition-colors"
-              >
-                Chats
-              </Link>
-              <Link
-                href="/dashboard/status"
-                className="hover:bg-zinc-800 hover:text-zinc-100 px-3 py-1.5 rounded-full text-sm transition-colors"
-              >
-                Status
-              </Link>
-              <Link
-                href="/dashboard/calls"
-                className="hover:bg-zinc-800 hover:text-zinc-100 px-3 py-1.5 rounded-full text-sm transition-colors"
-              >
-                Calls
-              </Link>
-              <Link
-                href="/dashboard/communities"
-                className="hover:bg-zinc-800 hover:text-zinc-100 px-3 py-1.5 rounded-full text-sm transition-colors"
-              >
-                Communities
-              </Link>
-              <button
-                suppressHydrationWarning
-                className="hover:bg-zinc-800 hover:text-zinc-100 px-3 py-1.5 rounded-full text-sm transition-colors"
-                onClick={() => {
-                  fetchUsers();
-                  fetchGroups();
-                  fetchServers();
-                  if (selectedServer?._id) {
-                    fetchChannels(selectedServer._id);
-                  }
-                }}
-              >
-                Refresh
-              </button>
+              <span className="text-xl">💬</span>
+            </Link>
 
-              <button
-                suppressHydrationWarning
-                className="hover:bg-zinc-800 hover:text-zinc-100 px-3 py-1.5 rounded-full text-sm transition-colors"
-                onClick={() => {
-                  setShowServerForm((prev) => !prev);
-                  setShowChannelForm(false);
-                }}
+            {currentuser?._id ? (
+              <Link
+                href={`/dashboard/achievements/${currentuser._id}`}
+                className="grid h-12 w-12 place-items-center rounded-[20px] border border-white/10 bg-black/30 overflow-hidden hover:border-zinc-400 transition"
+                title="Open your achievements"
               >
-                {showServerForm ? "Cancel Server" : "Create Server"}
-              </button>
+                <Avatar
+                  src={currentUserImage}
+                  name={session?.user?.name || "You"}
+                  size={48}
+                  className="w-full h-full object-cover shrink-0"
+                />
+              </Link>
+            ) : (
+              <div className="grid h-12 w-12 place-items-center rounded-[20px] border border-white/10 bg-black/30 overflow-hidden">
+                <Avatar
+                  src={currentUserImage}
+                  name={session?.user?.name || "You"}
+                  size={48}
+                  className="w-full h-full object-cover shrink-0"
+                />
+              </div>
+            )}
 
-              <button
-                suppressHydrationWarning
-                disabled={!selectedServer}
-                className="hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50 px-3 py-1.5 rounded-full text-sm transition-colors"
-                onClick={() => {
-                  setShowChannelForm((prev) => !prev);
-                  setShowServerForm(false);
-                }}
-              >
-                {showChannelForm ? "Cancel Channel" : "Create Channel"}
-              </button>
+            <div className="mt-1 h-px w-8 bg-zinc-800" />
 
-              <button
-                suppressHydrationWarning
-                className={`px-3 py-1.5 rounded-full text-sm transition-colors font-medium ${
-                  isGroupMode
-                    ? "bg-zinc-100 text-black hover:bg-zinc-300"
-                    : "hover:bg-zinc-800 hover:text-zinc-100"
-                }`}
-                onClick={toggleGroupMode}
-              >
-                {isGroupMode ? "Cancel Group" : "Make Group"}
-              </button>
+            <Link href="/dashboard/status" className="grid h-11 w-11 place-items-center rounded-[18px] bg-white/5 text-lg hover:bg-white/10 transition" title="Status"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" strokeWidth="0"></g><g id="SVGRepo_tracerCarrier" strokeLinecap="round" strokeLinejoin="round"></g><g id="SVGRepo_iconCarrier"> <path opacity="0.4" d="M2.44922 14.9702C3.51922 18.4102 6.39923 21.0602 9.97923 21.7902" stroke="#292D32" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round"></path> <path d="M2.05078 10.98C2.56078 5.93 6.82078 2 12.0008 2C17.1808 2 21.4408 5.94 21.9508 10.98" stroke="#292D32" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round"></path> <path d="M14.0098 21.8C17.5798 21.07 20.4498 18.45 21.5398 15.02" stroke="#292D32" strokeWidth="1.5" strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round"></path> </g></svg></Link>
+            <Link href="/dashboard/calls" className="grid h-11 w-11 place-items-center rounded-[18px] bg-white/5 text-lg hover:bg-white/10 transition" title="Calls"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" strokeWidth="0"></g><g id="SVGRepo_tracerCarrier" strokeLinecap="round" strokeLinejoin="round"></g><g id="SVGRepo_iconCarrier"> <path fillRule="evenodd" clipRule="evenodd" d="M17.3545 22.2323C15.3344 21.7262 11.1989 20.2993 7.44976 16.5502C3.70065 12.8011 2.2738 8.66559 1.76767 6.6455C1.47681 5.48459 2.00058 4.36434 2.88869 3.72997L5.21694 2.06693C6.57922 1.09388 8.47432 1.42407 9.42724 2.80051L10.893 4.91776C11.5152 5.8165 11.3006 7.0483 10.4111 7.68365L9.24234 8.51849C9.41923 9.1951 9.96939 10.5846 11.6924 12.3076C13.4154 14.0306 14.8049 14.5807 15.4815 14.7576L16.3163 13.5888C16.9517 12.6994 18.1835 12.4847 19.0822 13.1069L21.1995 14.5727C22.5759 15.5257 22.9061 17.4207 21.933 18.783L20.27 21.1113C19.6356 21.9994 18.5154 22.5232 17.3545 22.2323ZM8.86397 15.136C12.2734 18.5454 16.0358 19.8401 17.8405 20.2923C18.1043 20.3583 18.4232 20.2558 18.6425 19.9488L20.3056 17.6205C20.6299 17.1665 20.5199 16.5348 20.061 16.2171L17.9438 14.7513L17.0479 16.0056C16.6818 16.5182 16.0047 16.9202 15.2163 16.7501C14.2323 16.5378 12.4133 15.8569 10.2782 13.7218C8.1431 11.5867 7.46219 9.7677 7.24987 8.7837C7.07977 7.9953 7.48181 7.31821 7.99439 6.95208L9.24864 6.05618L7.78285 3.93893C7.46521 3.48011 6.83351 3.37005 6.37942 3.6944L4.05117 5.35744C3.74413 5.57675 3.64162 5.89565 3.70771 6.15943C4.15989 7.96418 5.45459 11.7266 8.86397 15.136Z" fill="#ffffff"></path> </g></svg></Link>
+            <Link href="/dashboard/devtools" className="grid h-11 w-11 place-items-center rounded-[18px] bg-white/5 text-lg hover:bg-white/10 transition" title="Dev tools">🛠️</Link>
+
+            <button onClick={() => { fetchUsers(); fetchFriendRequests(); fetchDiscoverUsers(discoverQuery); fetchGroups(); fetchServers(); if (selectedServer?._id) fetchChannels(selectedServer._id); }} className="grid h-11 w-11 place-items-center rounded-[18px] bg-white/5 text-lg hover:bg-white/10 transition" title="Refresh"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" strokeWidth="0"></g><g id="SVGRepo_tracerCarrier" strokeLinecap="round" strokeLinejoin="round"></g><g id="SVGRepo_iconCarrier"> <path d="M19.9381 13C19.979 12.6724 20 12.3387 20 12C20 7.58172 16.4183 4 12 4C9.49942 4 7.26681 5.14727 5.7998 6.94416M4.06189 11C4.02104 11.3276 4 11.6613 4 12C4 16.4183 7.58172 20 12 20C14.3894 20 16.5341 18.9525 18 17.2916M15 17H18V17.2916M5.7998 4V6.94416M5.7998 6.94416V6.99993L8.7998 7M18 20V17.2916" stroke="#ffffff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path> </g></svg></button>
+            <button onClick={() => { setShowServerForm((prev) => !prev); setShowChannelForm(false); }} className="grid h-11 w-11 place-items-center rounded-[18px] bg-white/5 text-lg hover:bg-white/10 transition" title={showServerForm ? "Cancel server" : "Create server"}><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><g id="SVGRepo_bgCarrier" strokeWidth="0"></g><g id="SVGRepo_tracerCarrier" strokeLinecap="round" strokeLinejoin="round"></g><g id="SVGRepo_iconCarrier"> <path d="M14 21H5C4.06812 21 3.60218 21 3.23463 20.8478C2.74458 20.6448 2.35523 20.2554 2.15224 19.7654C2 19.3978 2 18.9319 2 18C2 17.0681 2 16.6022 2.15224 16.2346C2.35523 15.7446 2.74458 15.3552 3.23463 15.1522C3.60218 15 4.06812 15 5 15H19C19.9319 15 20.3978 15 20.7654 15.1522C21.2554 15.3552 21.6448 15.7446 21.8478 16.2346C22 16.6022 22 17.0681 22 18C22 18.9319 22 19.3978 21.8478 19.7654C21.6448 20.2554 21.2554 20.6448 20.7654 20.8478C20.3978 21 19.9319 21 19 21H18" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round"></path> <path d="M2 12C2 11.0681 2 10.6022 2.15224 10.2346C2.35523 9.74458 2.74458 9.35523 3.23463 9.15224C3.60218 9 4.06812 9 5 9H19C19.9319 9 20.3978 9 20.7654 9.15224C21.2554 9.35523 21.6448 9.74458 21.8478 10.2346C22 10.6022 22 11.0681 22 12C22 12.9319 22 13.3978 21.8478 13.7654C21.6448 14.2554 21.2554 14.6448 20.7654 14.8478C20.3978 15 19.9319 15 19 15H5C4.06812 15 3.60218 15 3.23463 14.8478C2.74458 14.6448 2.35523 14.2554 2.15224 13.7654C2 13.3978 2 12.9319 2 12Z" stroke="#ffffff" strokeWidth="1.5"></path> <path d="M10 3H19C19.9319 3 20.3978 3 20.7654 3.15224C21.2554 3.35523 21.6448 3.74458 21.8478 4.23463C22 4.60218 22 5.06812 22 6C22 6.93188 22 7.39782 21.8478 7.76537C21.6448 8.25542 21.2554 8.64477 20.7654 8.84776C20.3978 9 19.9319 9 19 9H5C4.06812 9 3.60218 9 3.23463 8.84776C2.74458 8.64477 2.35523 8.25542 2.15224 7.76537C2 7.39782 2 6.93188 2 6C2 5.06812 2 4.60218 2.15224 4.23463C2.35523 3.74458 2.74458 3.35523 3.23463 3.15224C3.60218 3 4.06812 3 5 3H6" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round"></path> <circle cx="5" cy="12" r="1" fill="#ffffff"></circle> <circle cx="5" cy="6" r="1" fill="#ffffff"></circle> <circle cx="5" cy="18" r="1" fill="#ffffff"></circle> </g></svg></button>
+            <button disabled={!selectedServer} onClick={() => { setShowChannelForm((prev) => !prev); setShowServerForm(false); }} className="grid h-11 w-11 place-items-center rounded-[18px] bg-white/5 text-lg hover:bg-white/10 transition disabled:opacity-35" title={showChannelForm ? "Cancel channel" : "Create channel"}>#</button>
+            <button onClick={toggleGroupMode} className={`grid h-11 w-11 place-items-center rounded-[18px] text-lg transition ${isGroupMode ? "bg-zinc-100 text-black" : "bg-white/5 hover:bg-white/10"}`} title={isGroupMode ? "Cancel group" : "Make group"}><svg viewBox="0 0 1024 1024" className="icon" version="1.1" xmlns="http://www.w3.org/2000/svg" fill="#000000"><g id="SVGRepo_bgCarrier" strokeWidth="0"></g><g id="SVGRepo_tracerCarrier" strokeLinecap="round" strokeLinejoin="round"></g><g id="SVGRepo_iconCarrier"><path d="M388.9 597.4c-135.2 0-245.3-110-245.3-245.3s110-245.3 245.3-245.3 245.3 110 245.3 245.3-110.1 245.3-245.3 245.3z m0-405.3c-88.2 0-160 71.8-160 160s71.8 160 160 160 160-71.8 160-160-71.8-160-160-160z" fill="#3688FF"></path><path d="M591.3 981.3H186.5c-76.6 0-138.8-62.3-138.8-138.8V749c0-130.6 106.2-236.9 236.9-236.9h208.8c130.6 0 236.9 106.3 236.9 236.9v93.5c-0.2 76.5-62.4 138.8-139 138.8zM284.5 597.4c-83.6 0-151.5 68-151.5 151.5v93.5c0 29.5 24 53.5 53.5 53.5h404.8c29.5 0 53.5-24 53.5-53.5v-93.5c0-83.6-68-151.5-151.6-151.5H284.5z" fill="#3688FF"></path><path d="M847.2 938.6c-23.6 0-42.7-19.1-42.7-42.7s19.1-42.7 42.7-42.7c29.5 0 53.5-24 53.5-53.5v-93.5c0-83.6-68-151.5-151.6-151.5h-14.3c-19.8 0-37-13.6-41.5-32.9-4.5-19.3 4.8-39.1 22.5-48 54.8-27.3 88.9-82.1 88.9-143.1 0-88.2-71.8-160-160-160-23.6 0-42.7-19.1-42.7-42.7s19.1-42.7 42.7-42.7c135.2 0 245.3 110 245.3 245.3 0 57.8-19.9 111.9-54.9 154.8 88.3 34.6 151 120.6 151 220.9v93.5c0 76.6-62.3 138.8-138.9 138.8z" fill="#5F6379"></path></g></svg></button>
+
+            <div className="mt-auto flex flex-col items-center gap-2 pb-1">
+              <button className="grid h-11 w-11 place-items-center rounded-[18px] bg-rose-500/10 text-lg hover:bg-rose-500/20 transition" onClick={handleSignOut} title="Sign out">⎋</button>
             </div>
           </div>
+
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="h-16 bg-zinc-900/80 px-4 flex items-center justify-between border-b border-zinc-800">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">Workspace</p>
+                <h2 className="text-sm font-semibold text-zinc-100">Direct Messages</h2>
+              </div>
+              <div className="text-[11px] text-zinc-500">All your people, organized</div>
+            </div>
 
           {isGroupMode && (
             <div className="px-3 py-3 border-b border-zinc-800 bg-zinc-900/50">
@@ -1279,7 +1545,7 @@ const Page = () => {
               </span>
               <input
                 type="text"
-                placeholder="Search or start new chat"
+                placeholder="Search friends"
                 className="bg-transparent outline-none text-sm w-full text-zinc-100 placeholder:text-zinc-500"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
@@ -1287,7 +1553,123 @@ const Page = () => {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto bg-transparent scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+          <div className="flex-1 overflow-y-auto bg-transparent overflow-x-auto  scrollbar-thumb-[#888] scrollbar-track-[#222] hover:scrollbar-thumb-[#555] scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+            <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+              <div className="text-[11px] font-bold tracking-widest text-amber-400 uppercase">
+                Friend Requests
+              </div>
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                {friendRequests.length}
+              </span>
+            </div>
+
+            {friendRequests.length === 0 ? (
+              <p className="px-4 pb-3 text-xs text-zinc-500">No pending requests.</p>
+            ) : (
+              friendRequests.map((request) => (
+                <div
+                  key={request._id}
+                  className="mx-3 mb-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex items-center gap-2">
+                      <Avatar
+                        src={request.requester?.profilepic}
+                        name={request.requester?.name || "User"}
+                        size={30}
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium text-zinc-100">
+                          {request.requester?.name || request.requester?.email || "Unknown User"}
+                        </p>
+                        <p className="truncate text-[11px] text-zinc-500">sent you a friend request</p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => acceptFriendRequest(request._id)}
+                      disabled={isAcceptingRequestId === request._id}
+                      className="shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-60"
+                    >
+                      {isAcceptingRequestId === request._id ? "Accepting..." : "Accept"}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+
+            {sentFriendRequests.length > 0 && (
+              <div className="px-4 pb-3 text-[11px] text-zinc-500">
+                Sent requests pending: {sentFriendRequests.length}
+              </div>
+            )}
+
+            <div className="px-4 pt-1 pb-2 text-[11px] font-bold tracking-widest text-blue-400 uppercase">
+              Discover Users
+            </div>
+            <div className="px-3 pb-3">
+              <div className="mb-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+                <input
+                  type="text"
+                  placeholder="Search users to add"
+                  value={discoverQuery}
+                  onChange={(e) => setDiscoverQuery(e.target.value)}
+                  className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
+                />
+              </div>
+
+              {isSearchingUsers ? (
+                <p className="px-1 text-xs text-zinc-500">Searching users...</p>
+              ) : discoverUsers.length === 0 ? (
+                <p className="px-1 text-xs text-zinc-500">No users found.</p>
+              ) : (
+                <div className="space-y-1">
+                  {discoverUsers.map((item) => (
+                    <div
+                      key={item._id}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-900/40 px-2 py-2"
+                    >
+                      <div className="min-w-0 flex items-center gap-2">
+                        <Avatar src={item.profilepic} name={item.name} size={28} />
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium text-zinc-100">{item.name}</p>
+                          <p className="truncate text-[10px] text-zinc-500">{item.email}</p>
+                        </div>
+                      </div>
+
+                      {item.relationStatus === "friends" ? (
+                        <span className="rounded-md bg-zinc-700/60 px-2 py-1 text-[10px] text-zinc-300">Friend</span>
+                      ) : item.relationStatus === "request_sent" ? (
+                        <span className="rounded-md bg-amber-500/20 px-2 py-1 text-[10px] text-amber-300">Requested</span>
+                      ) : item.relationStatus === "request_received" ? (
+                        <button
+                          onClick={() => {
+                            const req = friendRequests.find(
+                              (r) => String(r.requester?._id) === String(item._id)
+                            );
+                            if (req) {
+                              acceptFriendRequest(req._id);
+                            }
+                          }}
+                          className="rounded-md border border-emerald-500/40 bg-emerald-500/20 px-2 py-1 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/30"
+                        >
+                          Accept
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => sendFriendRequest(item._id)}
+                          disabled={isSendingRequestTo === item._id}
+                          className="rounded-md border border-blue-500/40 bg-blue-500/20 px-2 py-1 text-[10px] font-semibold text-blue-300 hover:bg-blue-500/30 disabled:opacity-60"
+                        >
+                          {isSendingRequestTo === item._id ? "Sending..." : "Add"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* My Servers Section */}
             {servers.length > 0 && (
               <>
@@ -1398,7 +1780,7 @@ const Page = () => {
                               </button>
                             ) : (
                               <button
-                                onClick={() => joinServer(server._id as any, currentuser?._id as any)}
+                                onClick={() => joinServer(String(server._id), String(currentuser?._id))}
                                 disabled={joiningServerId === String(server._id)}
                                 className="ml-2 shrink-0 px-2 py-1 rounded-md text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 disabled:opacity-50 transition-colors"
                               >
@@ -1416,6 +1798,17 @@ const Page = () => {
 
             {selectedServer && channels.length > 0 && (
               <>
+                <div className="px-4 pt-4 pb-1 flex items-center justify-between gap-3">
+                  <div className="text-[11px] font-bold tracking-widest text-cyan-400 uppercase">
+                    Server Tasks · {selectedServer.name}
+                  </div>
+                  <Link
+                    href={`/dashboard/tasks?serverId=${selectedServer._id}`}
+                    className="shrink-0 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-[11px] font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+                  >
+                    Open board
+                  </Link>
+                </div>
                 <div className="px-4 pt-4 pb-1 text-[11px] font-bold tracking-widest text-emerald-400 uppercase">
                   Channels · {selectedServer.name}
                 </div>
@@ -1463,7 +1856,7 @@ const Page = () => {
                           : "hover:bg-zinc-900/60"
                       }`}
                     >
-                      <div className="shrink-0 w-[48px] h-[48px] rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 flex items-center justify-center text-sm font-semibold shadow-inner">
+                      <div className="shrink-0 w-12 h-12 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 flex items-center justify-center text-sm font-semibold shadow-inner">
                         {initials}
                       </div>
 
@@ -1484,7 +1877,7 @@ const Page = () => {
             )}
 
             <div className="px-4 pt-4 pb-1 text-[11px] font-bold tracking-widest text-zinc-500 uppercase">
-              Chats
+              Friends
             </div>
 
             {filteredUsers.map((user) => (
@@ -1512,9 +1905,14 @@ const Page = () => {
                     className="mr-3 h-4 w-4 accent-zinc-100 rounded border-zinc-700 bg-zinc-900"
                   />
                 )}
-                <div className="shrink-0 w-[48px] h-[48px] rounded-full overflow-hidden flex items-center justify-center border border-zinc-800">
+                <Link
+                  href={`/dashboard/achievements/${user._id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="shrink-0 w-12 h-12 rounded-full overflow-hidden flex items-center justify-center border border-zinc-800 hover:border-zinc-500 transition-colors"
+                  title={`Open ${user.name}'s achievements`}
+                >
                   <Avatar src={user.profilepic} name={user.name} size={48} className="w-full h-full object-cover shrink-0" />
-                </div>
+                </Link>
 
                 <div className="ml-4 flex-1 min-w-0 border-b border-zinc-800/50 pb-3 pt-1">
                   <div className="flex justify-between items-center gap-2">
@@ -1533,11 +1931,23 @@ const Page = () => {
                  <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 opacity-50">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                  </svg>
-                 No chats found
+                No friends found
               </div>
             )}
           </div>
+
+          <div className="px-4 py-3 border-t border-zinc-800 bg-zinc-900/70 flex items-center justify-start">
+            <button
+              suppressHydrationWarning
+              onClick={handleSignOut}
+              disabled={isSigningOut}
+              className="hover:bg-rose-500/20 hover:text-rose-300 disabled:opacity-60 px-3 py-1.5 rounded-full text-sm transition-colors"
+            >
+              {isSigningOut ? "Signing out..." : "Sign out"}
+            </button>
+          </div>
         </div>
+      </div>
 
         {/* --- Chat Window --- */}
         <div className="flex-1 flex flex-col bg-black min-w-0 border-l border-zinc-800 z-10 relative">
@@ -1547,15 +1957,19 @@ const Page = () => {
               <div className="h-16 bg-zinc-900/80 backdrop-blur-md px-6 flex items-center justify-between border-b border-zinc-800 z-20 shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
                 <div className="flex items-center min-w-0 cursor-pointer">
                   {selectedUser ? (
-                    <div className="shrink-0 w-[40px] h-[40px] rounded-full overflow-hidden flex items-center justify-center border border-zinc-700">
+                    <Link
+                      href={`/dashboard/achievements/${selectedUser._id}`}
+                      className="shrink-0 w-10 h-10 rounded-full overflow-hidden flex items-center justify-center border border-zinc-700 hover:border-zinc-500 transition-colors"
+                      title={`Open ${selectedUser.name}'s achievements`}
+                    >
                       <Avatar src={selectedUser.profilepic} name={selectedUser.name} size={40} className="w-full h-full object-cover shrink-0" />
-                    </div>
+                    </Link>
                   ) : selectedChannel ? (
-                    <div className="shrink-0 w-[40px] h-[40px] rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center text-sm font-semibold">
+                    <div className="shrink-0 w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center text-sm font-semibold">
                       #
                     </div>
                   ) : (
-                    <div className="shrink-0 w-[40px] h-[40px] rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 flex items-center justify-center text-sm font-semibold">
+                    <div className="shrink-0 w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 flex items-center justify-center text-sm font-semibold">
                       {(selectedGroup?.groupname || "G").slice(0, 2).toUpperCase()}
                     </div>
                   )}
@@ -1564,19 +1978,13 @@ const Page = () => {
                     <h2 className="font-semibold text-[16px] text-zinc-100 truncate tracking-wide">
                       {selectedUser?.name || selectedChannel?.name || selectedGroup?.groupname || "Group"}
                     </h2>
-                    {selectedUser && isOtherUserTyping ? (
-                      <div className="flex items-center gap-1 text-[12px] text-emerald-400 font-medium mt-0.5">
-                        <span>typing...</span>
-                      </div>
-                    ) : (
-                      <p className="text-[12px] text-zinc-400 mt-0.5">
-                        {selectedUser
-                          ? "online"
-                          : selectedChannel
-                          ? `#${selectedChannel.name}`
-                          : `${selectedGroup?.participants?.length || 0} members`}
-                      </p>
-                    )}
+                    <p className="text-[12px] text-zinc-400 mt-0.5">
+                      {selectedUser
+                        ? "online"
+                        : selectedChannel
+                        ? `#${selectedChannel.name}`
+                        : `${selectedGroup?.participants?.length || 0} members`}
+                    </p>
                   </div>
                 </div>
 
@@ -1594,7 +2002,8 @@ const Page = () => {
                     <>
                       <button
                         onClick={() => make_call(selectedUser, false)}
-                        className="text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 p-2 rounded-full transition-colors"
+                        disabled={!isSocketConnected}
+                        className="text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 p-2 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         title="Voice call"
                       >
                         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
@@ -1604,7 +2013,8 @@ const Page = () => {
 
                       <button
                         onClick={() => make_call(selectedUser, true)}
-                        className="text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 p-2 rounded-full transition-colors"
+                        disabled={!isSocketConnected}
+                        className="text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 p-2 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         title="Video call"
                       >
                         <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor">
@@ -1623,7 +2033,7 @@ const Page = () => {
               </div>
 
               {isPrPickerOpen && (
-                <div className="absolute right-6 top-20 z-30 w-[380px] max-h-[420px] overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
+                <div className="absolute right-6 top-20 z-30 w-95 max-h-105 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 shadow-2xl">
                   <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
                     <h3 className="text-sm font-semibold text-zinc-100">Share a Pull Request</h3>
                     <button
@@ -1634,7 +2044,7 @@ const Page = () => {
                     </button>
                   </div>
 
-                  <div className="max-h-[360px] overflow-y-auto p-2">
+                  <div className="max-h-90 overflow-y-auto p-2">
                     {isPrsLoading && (
                       <p className="px-2 py-4 text-sm text-zinc-400">Loading PRs...</p>
                     )}
@@ -1677,28 +2087,84 @@ const Page = () => {
               )}
 
               {/* Chat Area */}
-              <div className="flex-1 px-[8%] py-6 overflow-y-auto bg-transparent relative z-10 scrollbar-thin scrollbar-thumb-zinc-800">
+              <div className="flex-1 px-[8%] py-6 overflow-y-auto bg-transparent relative z-10 overflow-x-auto  scrollbar-thumb-[#888] scrollbar-track-[#222] hover:scrollbar-thumb-[#555] scrollbar-thumb-zinc-800">
                 <div className="space-y-3">
-                  {messages.map((msg, i) => {
+                  {messages.map((msg) => {
                     const isMe = msg.from === String(currentuser?._id);
                     return (
                       <div
-                        key={i}
+                        key={msg._id}
                         className={`flex ${isMe ? "justify-end" : "justify-start"}`}
                       >
-                        <div
-                          className={`px-4 py-2.5 rounded-2xl max-w-[65%] text-[14.5px] leading-relaxed shadow-md ${
-                            isMe
-                              ? "bg-zinc-100 text-black rounded-tr-sm"
-                              : "bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-tl-sm"
-                          }`}
-                        >
-                          <div className="whitespace-pre-wrap break-words">
-                            {renderMessageContent(msg.message)}
+                        <div className="max-w-[65%]">
+                          {msg.replyTo && (
+                            <div className="mb-1 rounded-xl border border-zinc-800/80 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-300">
+                              <p className="mb-0.5 text-[11px] uppercase tracking-wider text-zinc-500">
+                                Replying to {msg.replyTo.senderId === String(currentuser?._id) ? "you" : "message"}
+                              </p>
+                              <p className="truncate text-zinc-400">
+                                {msg.replyTo.isDeleted ? "This message was deleted" : msg.replyTo.text || "Original message"}
+                              </p>
+                            </div>
+                          )}
+
+                          <div
+                            className={`px-4 py-2.5 rounded-2xl text-[14.5px] leading-relaxed shadow-md ${
+                              isMe
+                                ? "bg-zinc-100 text-black rounded-tr-sm"
+                                : "bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-tl-sm"
+                            }`}
+                          >
+                            <div className={`whitespace-pre-wrap wrap-break-word ${msg.isDeleted ? "italic opacity-75" : ""}`}>
+                              {msg.contentType === "file" && msg.fileUrl ? (
+                                <a
+                                  href={msg.fileUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  download
+                                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                                    isMe
+                                      ? "border-zinc-400 bg-zinc-200 text-black hover:bg-zinc-300"
+                                      : "border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
+                                  }`}
+                                >
+                                  <span>📎</span>
+                                  <span className="max-w-55 truncate">{msg.fileName || msg.message || "Download file"}</span>
+                                </a>
+                              ) : (
+                                renderMessageContent(msg.message)
+                              )}
+                            </div>
+
+                            <div className="mt-2 flex items-center justify-end gap-2">
+                              {!msg.isDeleted && (
+                                <button
+                                  type="button"
+                                  onClick={() => startReplyToMessage(msg)}
+                                  className={`text-[10px] font-medium transition-colors ${
+                                    isMe ? "text-zinc-600 hover:text-zinc-800" : "text-zinc-500 hover:text-zinc-300"
+                                  }`}
+                                >
+                                  Reply
+                                </button>
+                              )}
+
+                              {isMe && !msg.isDeleted && (
+                                <button
+                                  type="button"
+                                  disabled={deletingMessageId === msg._id}
+                                  onClick={() => handleDeleteMessage(msg)}
+                                  className="text-[10px] font-medium text-rose-400 hover:text-rose-300 disabled:opacity-50"
+                                >
+                                  {deletingMessageId === msg._id ? "Deleting..." : "Delete"}
+                                </button>
+                              )}
+
+                              <span className={`text-[10px] ${isMe ? "text-zinc-500" : "text-zinc-500"}`}>
+                                {formatMessageTime(msg.createdAt)}
+                              </span>
+                            </div>
                           </div>
-                          <span className={`float-right text-[10px] ml-4 mt-2 ${isMe ? 'text-zinc-500' : 'text-zinc-500'}`}>
-                            12:00
-                          </span>
                         </div>
                       </div>
                     );
@@ -1708,14 +2174,32 @@ const Page = () => {
               </div>
 
               {/* Input Area */}
-              <div className="min-h-[72px] bg-zinc-900/90 backdrop-blur-md px-6 py-3 flex items-center gap-3 z-20 border-t border-zinc-800">
+              <div className="min-h-18 bg-zinc-900/90 backdrop-blur-md px-6 py-3 flex flex-col gap-2 z-20 border-t border-zinc-800">
+                {replyingTo && (
+                  <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] uppercase tracking-wider text-zinc-500">Replying</p>
+                      <p className="truncate text-xs text-zinc-300">
+                        {replyingTo.isDeleted ? "This message was deleted" : replyingTo.text || "Original message"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReplyingTo(null)}
+                      className="ml-3 rounded-full px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3">
                 {showEmoji && (
                   <div className="absolute bottom-20 left-6 z-30 shadow-2xl rounded-lg overflow-hidden border border-zinc-800">
                     <EmojiPicker
                       onEmojiClick={(emojiData) => {
                         if (inputmsgref.current) {
                           inputmsgref.current.value += emojiData.emoji;
-                          handleTypingChange(inputmsgref.current.value);
                         }
                       }}
                     />
@@ -1735,17 +2219,15 @@ const Page = () => {
                   </svg>
                 </button>
 
-                <button className="text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 rounded-full p-2.5 transition-colors">
-                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-                  </svg>
-                </button>
+                <FileMessageUploader
+                  onUploaded={sendFileMessage}
+                  disabled={!selectedUser && !selectedGroup && !selectedChannel}
+                />
 
                 <input
                   ref={inputmsgref}
                   placeholder="Message..."
                   className="flex-1 bg-zinc-950 px-5 py-3 text-zinc-100 rounded-full outline-none text-[15px] shadow-inner border border-zinc-800 focus:border-zinc-600 transition-colors placeholder:text-zinc-600"
-                  onChange={(e) => handleTypingChange(e.target.value)}
                   onKeyDown={(e) =>
                     e.key === "Enter" && sendmsg(inputmsgref.current?.value)
                   }
@@ -1760,6 +2242,7 @@ const Page = () => {
                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                   </svg>
                 </button>
+                </div>
               </div>
 
               {(incomingCall || isCalling || callAccepted) && (
@@ -1778,12 +2261,12 @@ const Page = () => {
                       </span>
                     </div>
 
-                    <div className="relative bg-zinc-900 min-h-[380px] flex items-center justify-center">
+                    <div className="relative bg-zinc-900 min-h-95 flex items-center justify-center">
                       <video
                         ref={remoteVideoRef}
                         autoPlay
                         playsInline
-                        className={`w-full h-[420px] object-cover ${isVideoCall ? "block" : "hidden"}`}
+                        className={`w-full h-105 object-cover ${isVideoCall ? "block" : "hidden"}`}
                       />
 
                       {!isVideoCall && (
@@ -1832,7 +2315,7 @@ const Page = () => {
             </>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 text-sm bg-black relative z-10">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-zinc-800 to-black shadow-2xl border border-zinc-700/50 mb-6">
+              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-linear-to-br from-zinc-800 to-black shadow-2xl border border-zinc-700/50 mb-6">
                 <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-300">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                 </svg>

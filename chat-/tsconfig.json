@@ -29,6 +29,6 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts"
-, "app/api/getcurrentuser/route.js"  ],
+, "app/api/getcurrentuser/route.js", "app/api/github/prs/route.js"  ],
   "exclude": ["node_modules"]
 }
