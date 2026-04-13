@@ -1,7 +1,5 @@
 <div align="center">
 
-
-
 <h1>💬 Chat</h1>
 
 <p><em>Connect instantly. Communicate freely.</em></p>
@@ -16,16 +14,14 @@
 </div>
 
 ---
-<div align="center">
-<!-- ============================================================ -->
-<img width="600" height="200" alt="A real-time chat application built with Next js and Socket IO" src="https://github.com/user-attachments/assets/78150d77-242f-4163-8c72-4eefc8caa27d" />
 
-<!-- ============================================================ -->
-<!-- <img src="public/banner.png" alt="Chat App Banner" width="100%" /> -->
+<div align="center">
+<img width="600" height="200" alt="A real-time chat application built with Next js and Socket IO" src="https://github.com/user-attachments/assets/78150d77-242f-4163-8c72-4eefc8caa27d" />
 </div>
+
 ## Overview
 
-**Chat** is a full-stack, real-time messaging application built with Next.js and Socket.IO. It supports direct messages, group chats, server-based communities with channels, voice and video calls, and status updates — all wrapped in a sleek, dark-themed UI.
+**Chat** is a full-stack, real-time messaging application built with Next.js and Socket.IO. It supports direct messages, group chats, server-based communities with channels, voice and video calls, file sharing, a friends system, tasks, achievements, and status updates — all wrapped in a sleek, dark-themed UI.
 
 ---
 
@@ -33,17 +29,22 @@
 
 | Feature | Description |
 |---|---|
-|  **Secure Authentication** | Sign in with Google or GitHub via NextAuth |
-|  **Real-time Messaging** | Instant DMs and group chats powered by Socket.IO |
-|  **Group Chats** | Create and manage multi-participant conversations |
-|  **Communities & Servers** | Discord-style servers with text and voice channels |
-|  **Voice & Video Calls** | Peer-to-peer calling via WebRTC (simple-peer) |
-|  **Typing Indicators** | Live "is typing…" feedback |
-|  **Read Receipts** | Know when your messages have been seen |
-|  **Emoji Picker** | Full emoji support in messages |
-|  **Media Sharing** | Send images, videos, and files |
-|  **Status Updates** | Share and view user status |
-|  **Dark UI** | Immersive, eye-friendly dark design |
+| **Secure Authentication** | Sign in with Google or GitHub via NextAuth |
+| **Route Protection** | Middleware-based auth guard on all private pages |
+| **Real-time Messaging** | Instant DMs and group chats powered by Socket.IO |
+| **Message Deletion** | Delete messages in real time across all clients |
+| **Group Chats** | Create and manage multi-participant conversations |
+| **Communities & Servers** | Discord-style servers with text and voice channels |
+| **Voice & Video Calls** | Peer-to-peer calling via WebRTC (simple-peer) |
+| **File Sharing** | Send images, videos, and files with upload support |
+| **Friends System** | Send, accept, and manage friend requests |
+| **Tasks** | Create and track tasks within the app |
+| **Achievements** | View per-user achievements |
+| **Typing Indicators** | Live "is typing…" feedback |
+| **Read Receipts** | Know when your messages have been seen |
+| **Emoji Picker** | Full emoji support in messages |
+| **Status Updates** | Share and view user status |
+| **Dark UI** | Immersive, eye-friendly dark design |
 
 ---
 
@@ -70,38 +71,59 @@
 ## 🗂 Project Structure
 
 ```
-chat-/
-├── app/
-│   ├── page.tsx              # Landing page
-│   ├── signin/               # Sign-in page (Google & GitHub OAuth)
-│   ├── dashboard/            # Main app shell
-│   │   ├── page.tsx          # Chat dashboard (DMs & group chats)
-│   │   ├── calls/            # Voice & video call history
-│   │   ├── communities/      # Communities & servers
-│   │   ├── status/           # User status updates
-│   │   └── prs/              # Private/restricted routes
-│   └── api/                  # Next.js API routes
-│       ├── auth/             # NextAuth configuration
-│       ├── users/            # User management
-│       ├── messages/         # Message CRUD
-│       ├── grp_chat/         # Group chat logic
-│       ├── channel/          # Channel management
-│       ├── server/           # Server/community management
-│       └── ...
-├── components/
-│   ├── login-btn.jsx         # Login button component
-│   └── session-provider.jsx  # NextAuth session wrapper
-├── model/
-│   ├── user.model.js         # User schema
-│   ├── chat.model.js         # Chat schema (DMs & groups)
-│   ├── message.model.js      # Message schema
-│   ├── server.model.js       # Server/community schema
-│   ├── channle.model.js      # Channel schema
-│   └── status.model.js       # Status schema
-├── server.js                 # Standalone Socket.IO server (port 3001)
-├── next.config.ts
-├── tsconfig.json
-└── package.json
+Chat/
+├── backend/                  # Standalone Socket.IO server
+│   ├── server.js             # Real-time server (port 3001)
+│   └── package.json
+└── chat-/                    # Next.js application
+    ├── app/
+    │   ├── page.tsx              # Landing page
+    │   ├── not-found.tsx         # 404 page
+    │   ├── signin/               # Sign-in page (Google & GitHub OAuth)
+    │   ├── dashboard/            # Main app shell
+    │   │   ├── page.tsx          # Chat dashboard (DMs & group chats)
+    │   │   ├── calls/            # Voice & video call history
+    │   │   ├── communities/      # Communities & servers
+    │   │   ├── status/           # User status updates
+    │   │   ├── achievements/     # Per-user achievements
+    │   │   ├── tasks/            # Task management
+    │   │   ├── devtools/         # Developer tools
+    │   │   └── prs/              # Private/restricted routes
+    │   └── api/                  # Next.js API routes
+    │       ├── auth/             # NextAuth configuration
+    │       ├── users/            # User management
+    │       ├── getcurrentuser/   # Current user lookup
+    │       ├── messages/         # Message CRUD
+    │       ├── send-messages/    # Send message endpoint
+    │       ├── grp_chat/         # Group chat logic
+    │       ├── channel/          # Channel management
+    │       ├── server/           # Server/community management
+    │       ├── friends/          # Friend requests & management
+    │       ├── achievements/     # Achievements CRUD
+    │       ├── tasks/            # Task CRUD
+    │       ├── upload_file/      # File upload
+    │       ├── upload_status/    # Status media upload
+    │       └── github/           # GitHub integration
+    ├── components/
+    │   ├── FileMessageUploader.tsx  # File & media upload component
+    │   ├── login-btn.jsx            # Login button
+    │   └── session-provider.jsx     # NextAuth session wrapper
+    ├── lib/
+    │   └── db.js                 # MongoDB connection utility
+    ├── model/
+    │   ├── user.model.js         # User schema
+    │   ├── chat.model.js         # Chat schema (DMs & groups)
+    │   ├── message.model.js      # Message schema
+    │   ├── server.model.js       # Server/community schema
+    │   ├── channle.model.js      # Channel schema
+    │   ├── status.model.js       # Status schema
+    │   ├── friend.model.js       # Friend relationship schema
+    │   ├── task.model.js         # Task schema
+    │   └── achimvemnts.model.js  # Achievements schema
+    ├── middleware.ts             # Auth route protection
+    ├── next.config.ts
+    ├── tsconfig.json
+    └── package.json
 ```
 
 ---
@@ -117,12 +139,18 @@ chat-/
 
 ```bash
 git clone https://github.com/PRERAN001/Chat.git
-cd Chat/chat-
+cd Chat
 ```
 
 ### 2. Install dependencies
 
 ```bash
+# Next.js app
+cd chat-
+npm install
+
+# Socket.IO server
+cd ../backend
 npm install
 ```
 
@@ -147,17 +175,26 @@ GITHUB_CLIENT_SECRET=your_github_client_secret
 MONGODB_URI=mongodb://localhost:27017/chat-app--
 ```
 
+Create a `.env` file in the `backend/` directory:
+
+```env
+SOCKET_PORT=3001
+CORS_ORIGIN=http://localhost:3000
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB_NAME=chat-app--
+```
+
 ### 4. Run the Socket.IO server
 
-The real-time server runs separately on port **3001**:
-
 ```bash
+cd backend
 node server.js
 ```
 
 ### 5. Run the Next.js development server
 
 ```bash
+cd chat-
 npm run dev
 ```
 
@@ -173,7 +210,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `npm run build` | Build for production |
 | `npm run start` | Start production server |
 | `npm run lint` | Run ESLint |
-| `node server.js` | Start the Socket.IO signalling server |
+| `node server.js` | Start the Socket.IO server (run from `backend/`) |
 
 ---
 
@@ -185,7 +222,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `join_context` | Client → Server | Join a chat or channel room |
 | `send_message` | Client → Server | Send a message |
 | `receive_message` | Server → Client | Deliver a message |
-| `typing` / `stop_typing` | Client → Server | Typing indicator |
+| `delete_message` | Client → Server | Delete a message |
+| `receive_message_deleted` | Server → Client | Notify clients of a deleted message |
 | `call-user` | Client → Server | Initiate a voice/video call |
 | `incoming-call` | Server → Client | Notify the callee |
 | `answer-call` | Client → Server | Accept a call |
@@ -203,6 +241,9 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | **Message** | `chatId`, `channelId`, `senderId`, `content` (text/image/video/file), `seenBy[]` |
 | **Server** | `name`, `owner`, `members[]`, `icon` |
 | **Channel** | `serverId`, `name`, `type` (text/voice) |
+| **Friend** | `requester`, `recipient`, `status` |
+| **Task** | `userId`, `title`, `description`, `status` |
+| **Achievement** | `userId`, `title`, `description` |
 
 ---
 
@@ -218,7 +259,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 📄 License
 
-This project is open-source. See the [LICENSE](../LICENSE) file for details.
+This project is open-source. See the [LICENSE](LICENSE) file for details.
 
 ---
 
