@@ -1,6 +1,13 @@
+import { getServerSession } from "next-auth";
+import { redirect } from "next/navigation";
 import Component from "../components/login-btn";
+import { authOptions } from "./api/auth/[...nextauth]/route";
 
 export default function Home() {
+  const session = await getServerSession(authOptions);
+  if (session) {
+    redirect("/dashboard");
+  }
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center bg-black font-sans text-zinc-50 overflow-hidden selection:bg-zinc-800 selection:text-white">
       {/* Subtle Background Glow */}
