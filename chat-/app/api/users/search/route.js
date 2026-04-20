@@ -20,6 +20,9 @@ export async function GET(req) {
 
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") || "").trim();
+    
+    // If no search query, limit to 5 (discover mode). If searching, show 25 results.
+    const limit = q ? 25 : 5;
 
     const baseFilter = {
       _id: { $ne: currentUser._id },
@@ -36,7 +39,7 @@ export async function GET(req) {
     const candidates = await User.find(baseFilter)
       .select("_id name email profilepic")
       .sort({ name: 1 })
-      .limit(25);
+      .limit(limit);
 
     const candidateIds = candidates.map((item) => item._id);
 

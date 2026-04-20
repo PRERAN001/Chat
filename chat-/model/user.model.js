@@ -66,6 +66,15 @@ const UserSchema = new Schema({
         type: Number,
         default: 0
     },
+    authProvider: {
+        type: String,
+        enum: ["github", "google"],
+        default: "github"
+    },
+    googleId: {
+        type: String,
+        default: ""
+    },
     
 }, { timestamps: true });
 

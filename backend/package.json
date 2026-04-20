@@ -1,5 +1,9 @@
 {
   "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
   "dependencies": {
     "dotenv": "^17.4.2",
     "mongoose": "^9.4.1",

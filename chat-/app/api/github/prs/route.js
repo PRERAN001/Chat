@@ -16,6 +16,15 @@ const ghFetch = async (accessToken, path) => {
 
 export async function GET(req) {
   const token = await getToken({ req });
+  
+  // Check if user is authenticated via Google (not allowed for GitHub features)
+  if (token?.provider === "google") {
+    return NextResponse.json(
+      { error: "GitHub features are not available for Google-authenticated users" },
+      { status: 403 }
+    );
+  }
+
   const accessToken = token?.accessToken;
 
   if (!accessToken) {
